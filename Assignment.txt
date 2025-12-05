@@ -1,0 +1,156 @@
+
+CREATE TABLE items (
+    store_id TEXT,
+    item_id TEXT,
+    item_category TEXT,
+    item_name TEXT
+);
+
+CREATE TABLE transactions (
+  buyer_id INTEGER,
+  purchase_time TIMESTAMPTZ,
+  refund_item TIMESTAMPTZ,
+  store_id VARCHAR(16),
+  item_id VARCHAR(16),
+  gross_transaction_value VARCHAR(16)
+);
+
+
+
+INSERT INTO items (store_id, item_id, item_category, item_name) VALUES
+('a', 'a1', 'pants', 'denim pants'),
+('a', 'a2', 'tops', 'blouse'),
+('f', 'f1', 'table', 'coffee table'),
+('f', 'f5', 'chair', 'lounge chair'),
+('f', 'f6', 'chair', 'armchair'),
+('d', 'd2', 'jewelry', 'bracelet'),
+('b', 'b4', 'earphone', 'airpods');
+
+INSERT INTO transactions
+(buyer_id, purchase_time, refund_item, store_id, item_id, gross_transaction_value)
+VALUES
+(3, '2019-09-19 21:19:06.544', NULL, 'a', 'a1', '$58.00'),
+(12, '2019-12-10 20:10:14.324', '2019-12-15 23:19:06.544', 'b', 'b2', '$475.00'),
+(3, '2020-09-01 23:59:46.561', '2020-09-02 21:22:06.331', 'f', 'f9', '$33.00'),
+(2, '2020-04-30 21:19:06.544', NULL, 'd', 'd3', '$250.00'),
+(1, '2020-10-22 22:20:06.531', NULL, 'f', 'f2', '$91.00'),
+(8, '2020-04-16 21:10:22.214', NULL, 'e', 'e7', '$24.00'),
+(5, '2019-09-23 12:09:35.542', '2019-09-27 02:55:02.114', 'g', 'g6', '$61.00');
+
+
+SELECT * FROM transactions;
+
+
+-- Q1: Count of non-refunded purchases per month (YYYY-MM)
+SELECT
+  TO_CHAR(t.purchase_time, 'YYYY-MM') AS month,
+  COUNT(*) AS total_purchases
+FROM transactions t 
+WHERE t.refund_item IS NULL       -- exclude refunded purchases
+GROUP BY TO_CHAR(t.purchase_time, 'YYYY-MM')
+ORDER BY month;
+
+
+-- Q2: How many stores receive at least 5 orders/transactions in October 2020
+SELECT COUNT(*) AS stores_with_5_or_more_orders
+FROM (
+  SELECT t.store_id, COUNT(*) AS orders_count
+  FROM transactions t
+  WHERE t.purchase_time >= '2020-10-01'::timestamptz
+    AND t.purchase_time <  '2020-11-01'::timestamptz
+  GROUP BY t.store_id
+  HAVING COUNT(*) >= 5
+) sub;
+
+-- Q3: Shortest refund interval per store (in minutes).
+WITH shortest_per_store AS (
+  SELECT 
+    store_id,
+    MIN(EXTRACT(EPOCH FROM (refund_item - purchase_time)) / 60.0) AS shortest_minutes
+  FROM transactions
+  WHERE refund_item IS NOT NULL
+  GROUP BY store_id
+)
+SELECT store_id, shortest_minutes
+FROM shortest_per_store
+ORDER BY store_id;
+
+--Q4 What is the gross_transaction_value of every store’s first order?
+WITH ranked AS (
+  SELECT
+    t.*,
+    RANK() OVER (PARTITION BY t.store_id ORDER BY t.purchase_time ASC) AS rk
+  FROM transactions t
+)
+SELECT
+  r.store_id,
+  r.purchase_time,
+  r.gross_transaction_value,
+  r.item_id,
+  r.buyer_id
+  ,i.item_name   -- NULL if item not present in items table
+FROM ranked r
+LEFT JOIN items i
+  ON i.store_id = r.store_id
+ AND i.item_id  = r.item_id
+WHERE r.rk = 1
+ORDER BY r.store_id, r.purchase_time;
+
+
+--Q5
+WITH fp AS (
+    SELECT buyer_id, MIN(purchase_time) AS first_time
+    FROM transactions
+    GROUP BY buyer_id
+)
+
+SELECT i.item_name, COUNT(*) AS freq
+FROM fp
+JOIN transactions t
+  ON t.buyer_id = fp.buyer_id
+ AND t.purchase_time = fp.first_time
+JOIN items i
+  ON i.store_id = t.store_id
+ AND i.item_id  = t.item_id
+GROUP BY i.item_name
+ORDER BY freq DESC
+LIMIT 1;
+
+--Q6
+SELECT
+    t.*,
+    CASE
+        WHEN refund_item IS NOT NULL
+         AND refund_item <= purchase_time + INTERVAL '72 hours'
+        THEN 'REFUND_ALLOWED'
+        ELSE 'REFUND_NOT_ALLOWED'
+    END AS refund_flag
+FROM transactions t;
+
+
+-- Q7: Rank purchases per buyer (ignore refunded rows) and return only the 2nd purchase
+WITH numbered AS (
+  SELECT
+    t.*,
+    ROW_NUMBER() OVER (PARTITION BY t.buyer_id ORDER BY t.purchase_time) AS rn
+  FROM transactions t
+)
+SELECT buyer_id, purchase_time, store_id, item_id, gross_transaction_value, refund_item
+FROM numbered
+WHERE rn = 2
+ORDER BY buyer_id;
+
+-- Q8: Second transaction time per buyer (count all transactions)
+WITH ordered AS (
+  SELECT
+    buyer_id,
+    purchase_time,
+    ROW_NUMBER() OVER (PARTITION BY buyer_id ORDER BY purchase_time) AS rn
+  FROM transactions
+)
+SELECT buyer_id,
+       purchase_time AS second_transaction_time
+FROM ordered
+WHERE rn = 2
+ORDER BY buyer_id;
+
